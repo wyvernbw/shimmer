@@ -13,3 +13,6 @@ winit = "0.29.10"
 tracing = "0.1.40"
 glutin = "0.31.2"
 glutin-winit = "0.4.2"
+
+[dev-dependencies]
+tracing-subscriber = "0.3.18"

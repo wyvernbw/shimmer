@@ -1,5 +1,15 @@
-use std::error::Error;
+#![feature(type_changing_struct_update)]
+#![feature(associated_type_defaults)]
+#![feature(trait_alias)]
+use std::{
+    default,
+    error::Error,
+    marker::PhantomData,
+    process::exit,
+    time::{Duration, Instant},
+};
 
+use glow::Buffer;
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
     context::{
@@ -7,19 +17,30 @@ use glutin::{
         PossiblyCurrentContext, PossiblyCurrentGlContext, Version,
     },
     display::{GetGlDisplay, GlDisplay},
-    surface::{Surface, SurfaceTypeTrait, WindowSurface},
+    surface::{GlSurface, Surface, WindowSurface},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use posh::{
-    gl,
-    sl::{FsFunc, FsSig, VsFunc, VsSig},
-    UniformUnion,
+    bytemuck::{Pod, Zeroable},
+    gl::{
+        BufferUsage, DrawBuilder, DrawBuilderWithUniforms, UniformBuffer, UniformBufferBinding,
+        VertexBuffer, VertexSpec,
+    },
+    sl::{ColorSample, FsFunc, FsSig, VsFunc, VsSig},
+    Block, Gl, Sl, UniformInterface, UniformUnion, VsInterface,
 };
 use raw_window_handle::HasRawWindowHandle;
 use winit::{
+    dpi::PhysicalSize,
+    event::{Event, WindowEvent},
     event_loop::EventLoop,
+    platform::pump_events::EventLoopExtPumpEvents,
     window::{Window, WindowBuilder},
 };
+
+pub use gl::Context;
+pub use posh::gl;
+pub use posh::sl;
 
 // TODO: Delete this
 type QuickError = Box<dyn Error + 'static>;
@@ -31,6 +52,7 @@ struct ProgramState {
     gl_surface: Surface<WindowSurface>,
     window_builder: WindowBuilder,
     window: Window,
+    ctx: PossiblyCurrentContext,
 }
 
 impl ProgramState {
@@ -85,60 +107,238 @@ impl ProgramState {
             gl_surface,
             window_builder,
             window,
+            ctx,
         })
     }
 }
 
-pub struct Program<U, VertexSig, FragSig>
+pub struct Program<U, V, F = sl::Vec4>
 where
-    VertexSig: VsSig,
-    FragSig: FsSig,
-    U: UniformUnion<VertexSig::U, FragSig::U>,
+    U: UniformInterface<Sl>,
+    V: VsInterface<Sl>,
+    F: ColorSample,
 {
     state: ProgramState,
-    inner: gl::Program<U, <VertexSig as VsSig>::V, <FragSig as FsSig>::F>,
+    run_mode: RunMode,
+    inner: gl::Program<U, V, F>,
+    workflow: Workflow<U, V, F>,
 }
 
-// FIXME: remove unwrap
-impl<U, VertexSig, FragSig> Program<U, VertexSig, FragSig>
+pub trait VertexFn<V: VsInterface<Sl>> = Fn(&gl::Context) -> VertexSpec<V>;
+pub trait UniformsFn<U: UniformInterface<Sl>> = Fn(&gl::Context) -> <U as UniformInterface<Sl>>::Gl;
+pub trait SettingsFn = Fn(&gl::Context) -> gl::DrawSettings;
+
+type VertexCallback<V> = Box<dyn VertexFn<V>>;
+type UniformsCallback<U> = Box<dyn UniformsFn<U>>;
+type SettingsCallback = Box<dyn SettingsFn>;
+
+pub struct Workflow<U, V, F>
 where
-    VertexSig: VsSig<C = ()>,
-    FragSig: FsSig<C = (), W = VertexSig::W>,
-    U: UniformUnion<VertexSig::U, FragSig::U>,
+    U: UniformInterface<Sl>,
+    V: VsInterface<Sl>,
+    F: ColorSample,
 {
-    pub fn new<VertexFn, FragFn>(
-        headless: bool,
-        vertex_shader: VertexFn,
-        fragment_shader: FragFn,
+    vertex_spec: Option<VertexCallback<V>>,
+    uniforms: Option<UniformsCallback<U>>,
+    settings: Option<SettingsCallback>,
+    _marker: PhantomData<F>,
+}
+
+impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSample>
+    Program<U, V, F>
+{
+    pub fn new<FFn, VFn, FSig, VSig>(
+        vertex_shader: VFn,
+        fragment_shader: FFn,
+        run_mode: RunMode,
     ) -> Result<Self, QuickError>
     where
-        VertexFn: VsFunc<VertexSig>,
-        FragFn: FsFunc<FragSig>,
+        VSig: VsSig<C = (), V = V>,
+        FSig: FsSig<C = (), W = VSig::W, F = F>,
+        VFn: VsFunc<VSig>,
+        FFn: FsFunc<FSig>,
+        U: UniformUnion<VSig::U, FSig::U>,
     {
-        let state = ProgramState::new(headless).unwrap();
-        let inner = state.gl.create_program(vertex_shader, fragment_shader)?;
-        Ok(Program { state, inner })
+        let state = ProgramState::new(matches!(run_mode, RunMode::Headless))?;
+        let inner: gl::Program<U, V, F> =
+            state.gl.create_program(vertex_shader, fragment_shader)?;
+        Ok(Program {
+            state,
+            run_mode,
+            inner,
+            workflow: Workflow {
+                vertex_spec: None,
+                uniforms: None,
+                settings: None,
+                _marker: PhantomData,
+            },
+        })
     }
 
-    pub fn headless<VertexFn, FragFn>(
-        vertex_shader: VertexFn,
-        fragment_shader: FragFn,
-    ) -> Result<Self, QuickError>
-    where
-        VertexFn: VsFunc<VertexSig>,
-        FragFn: FsFunc<FragSig>,
-    {
-        Self::new(true, vertex_shader, fragment_shader)
+    pub fn with_vertices(self, vertices: impl VertexFn<V> + 'static) -> Self {
+        Self {
+            workflow: Workflow {
+                vertex_spec: Some(Box::new(vertices)),
+                ..self.workflow
+            },
+            ..self
+        }
     }
 
-    pub fn windowed<VertexFn, FragFn>(
-        vertex_shader: VertexFn,
-        fragment_shader: FragFn,
-    ) -> Result<Self, QuickError>
-    where
-        VertexFn: VsFunc<VertexSig>,
-        FragFn: FsFunc<FragSig>,
-    {
-        Self::new(false, vertex_shader, fragment_shader)
+    pub fn with_uniforms(self, uniforms: impl UniformsFn<U> + 'static) -> Self {
+        Self {
+            workflow: Workflow {
+                uniforms: Some(Box::new(uniforms)),
+                ..self.workflow
+            },
+            ..self
+        }
     }
+
+    pub fn with_draw_settings(self, settings: impl SettingsFn + 'static) -> Self {
+        Self {
+            workflow: Workflow {
+                settings: Some(Box::new(settings)),
+                ..self.workflow
+            },
+            ..self
+        }
+    }
+}
+
+impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U, V, sl::Vec4> {
+    pub fn draw(&self) -> Result<(), QuickError> {
+        match (
+            &self.workflow.vertex_spec,
+            &self.workflow.uniforms,
+            &self.workflow.settings,
+        ) {
+            (None, _, _) => {}
+            (Some(_), None, _) => {}
+            (Some(vertex), Some(uniforms), None) => {
+                self.inner
+                    .with_uniforms(uniforms(&self.state.gl))
+                    .draw(vertex(&self.state.gl))?;
+            }
+            (Some(vertex), Some(uniforms), Some(settings)) => {
+                self.inner
+                    .with_settings(settings(&self.state.gl))
+                    .with_uniforms(uniforms(&self.state.gl))
+                    .draw(vertex(&self.state.gl))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn serve(mut self) -> Result<(), QuickError> {
+        match self.run_mode {
+            RunMode::Headless => todo!(),
+            RunMode::Windowed(ref window_config) => {
+                self.draw()?;
+                self.state.gl_surface.swap_buffers(&self.state.ctx)?;
+                loop {
+                    let (tx, rx) = std::sync::mpsc::channel::<()>();
+                    tx.send(())?;
+                    let timeout = if let Some(WindowConfig {
+                        draw_mode: DrawMode::Loop { framerate },
+                        ..
+                    }) = window_config
+                    {
+                        Some(Duration::from_secs(1) / *framerate as u32)
+                    } else {
+                        None
+                    };
+                    self.state
+                        .event_loop
+                        .pump_events(timeout, move |event, target| match event {
+                            Event::WindowEvent { event, .. } => match event {
+                                WindowEvent::RedrawRequested => {
+                                    tx.send(());
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        });
+                    if let Some(WindowConfig {
+                        draw_mode: DrawMode::Loop { framerate },
+                        ..
+                    }) = window_config
+                    {
+                        let time = Instant::now();
+                        let frame_time = Duration::from_secs_f32(1.0 / *framerate as f32);
+                        if let Ok(()) = rx.recv() {
+                            self.draw()?;
+                            self.state.gl_surface.swap_buffers(&self.state.ctx)?;
+                        }
+                        let delta = time.elapsed();
+                        if delta < frame_time {
+                            std::thread::sleep(frame_time - delta);
+                        }
+                        tracing::info!(name: "frame_time", "Frame time: {:?},\t FPS: {:?}", time.elapsed(), 1.0 / time.elapsed().as_secs_f32());
+                        self.state.window.request_redraw();
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<V: VsInterface<Sl> + 'static> Program<(), V, sl::Vec4> {
+    pub fn draw_no_uniforms(&mut self) -> Result<(), QuickError> {
+        match &self.workflow {
+            Workflow {
+                vertex_spec: Some(vertex_spec),
+                uniforms: Some(uniforms),
+                ..
+            } => {
+                unreachable!();
+            }
+            Workflow {
+                vertex_spec: Some(vertex_spec),
+                uniforms: None,
+                ..
+            } => {
+                self.inner.draw(vertex_spec(&self.state.gl))?;
+            }
+            Workflow {
+                vertex_spec: None, ..
+            } => {
+                return Err("No vertex buffer provided!".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct WindowConfig {
+    pub title: String,
+    pub size: PhysicalSize<u32>,
+    pub draw_mode: DrawMode,
+}
+
+#[derive(Debug, Default, Clone)]
+pub enum DrawMode {
+    #[default]
+    Once,
+    Loop {
+        framerate: u64,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum RunMode {
+    Headless,
+    Windowed(Option<WindowConfig>),
+}
+
+pub fn full_screen_quad() -> Vec<gl::Vec2> {
+    vec![
+        [-1.0, 1.0].into(),
+        [-1.0, -1.0].into(),
+        [1.0, -1.0].into(),
+        [1.0, -1.0].into(),
+        [1.0, 1.0].into(),
+        [-1.0, 1.0].into(),
+    ]
 }
