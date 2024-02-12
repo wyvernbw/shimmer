@@ -2,14 +2,12 @@
 #![feature(associated_type_defaults)]
 #![feature(trait_alias)]
 use std::{
-    default,
     error::Error,
     marker::PhantomData,
     process::exit,
     time::{Duration, Instant},
 };
 
-use glow::Buffer;
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
     context::{
@@ -21,13 +19,9 @@ use glutin::{
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use posh::{
-    bytemuck::{Pod, Zeroable},
-    gl::{
-        BufferUsage, DrawBuilder, DrawBuilderWithUniforms, UniformBuffer, UniformBufferBinding,
-        VertexBuffer, VertexSpec,
-    },
+    gl::VertexSpec,
     sl::{ColorSample, FsFunc, FsSig, VsFunc, VsSig},
-    Block, Gl, Sl, UniformInterface, UniformUnion, VsInterface,
+    Sl, UniformInterface, UniformUnion, VsInterface,
 };
 use raw_window_handle::HasRawWindowHandle;
 use winit::{
@@ -35,6 +29,7 @@ use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
     platform::pump_events::EventLoopExtPumpEvents,
+    raw_window_handle::HasDisplayHandle,
     window::{Window, WindowBuilder},
 };
 
@@ -57,12 +52,20 @@ struct ProgramState {
 
 impl ProgramState {
     // FIXME: Improve error type
-    fn new(headless: bool) -> Result<Self, Box<dyn Error + 'static>> {
+    fn new(run_mode: RunMode) -> Result<Self, Box<dyn Error + 'static>> {
         let event_loop = EventLoop::new()?;
         let window_builder = WindowBuilder::new()
             .with_title("Posh")
-            .with_visible(!headless)
+            .with_visible(!matches!(run_mode, RunMode::Headless))
             .with_transparent(true);
+
+        let window_builder =
+            if let RunMode::Windowed(Some(WindowConfig { title, size, .. })) = run_mode {
+                window_builder.with_inner_size(size)
+            } else {
+                window_builder
+            };
+
         let template = ConfigTemplateBuilder::new().with_api(Api::OPENGL);
         let display = DisplayBuilder::new().with_window_builder(Some(window_builder.clone()));
         let (Some(window), config) = display.build(&event_loop, template, |configs| {
@@ -159,7 +162,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
         FFn: FsFunc<FSig>,
         U: UniformUnion<VSig::U, FSig::U>,
     {
-        let state = ProgramState::new(matches!(run_mode, RunMode::Headless))?;
+        let state = ProgramState::new(run_mode.clone())?;
         let inner: gl::Program<U, V, F> =
             state.gl.create_program(vertex_shader, fragment_shader)?;
         Ok(Program {
@@ -265,7 +268,8 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U,
                         });
                     if let Some(WindowConfig {
                         draw_mode: DrawMode::Loop { framerate },
-                        ..
+                        title,
+                        size,
                     }) = window_config
                     {
                         let time = Instant::now();
@@ -281,6 +285,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U,
                         #[cfg(feature = "tracing")]
                         log_frame_time(time.elapsed())?;
                         self.state.window.request_redraw();
+                        self.state.window.set_title(title);
                     }
                 }
             }
