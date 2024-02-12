@@ -15,7 +15,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         RunMode::Windowed(Some(WindowConfig {
             title: "My window".into(),
             size: PhysicalSize::new(800, 600),
-            draw_mode: shimmer::DrawMode::Loop { framerate: 60 },
+            draw_mode: shimmer::DrawMode::Loop { framerate: 144 },
         })),
     )?;
     let start = Instant::now();

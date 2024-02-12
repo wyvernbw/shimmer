@@ -253,10 +253,14 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U,
                         .pump_events(timeout, move |event, target| match event {
                             Event::WindowEvent { event, .. } => match event {
                                 WindowEvent::RedrawRequested => {
-                                    tx.send(());
+                                    tx.send(()).unwrap();
+                                }
+                                WindowEvent::CloseRequested => {
+                                    exit(0);
                                 }
                                 _ => {}
                             },
+                            Event::Suspended => {}
                             _ => {}
                         });
                     if let Some(WindowConfig {
@@ -274,7 +278,8 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U,
                         if delta < frame_time {
                             std::thread::sleep(frame_time - delta);
                         }
-                        tracing::info!(name: "frame_time", "Frame time: {:?},\t FPS: {:?}", time.elapsed(), 1.0 / time.elapsed().as_secs_f32());
+                        #[cfg(feature = "tracing")]
+                        log_frame_time(time.elapsed())?;
                         self.state.window.request_redraw();
                     }
                 }
@@ -308,6 +313,24 @@ impl<V: VsInterface<Sl> + 'static> Program<(), V, sl::Vec4> {
         }
         Ok(())
     }
+}
+
+#[cfg(feature = "tracing")]
+fn log_frame_time(time: Duration) -> Result<(), Box<dyn Error + 'static>> {
+    use std::io::stdout;
+
+    use crossterm::{
+        cursor::{self, MoveDown, MoveUp},
+        execute,
+        terminal::{Clear, ClearType},
+    };
+
+    let position = cursor::position()?;
+    let ms = time.as_millis();
+    execute!(stdout(), Clear(ClearType::CurrentLine))?;
+    tracing::info!(name: "frame_time", "Frame time: {:.2}ms\t FPS: {:.2}", ms, 1.0 / time.as_secs_f64());
+    execute!(stdout(), MoveUp(1))?;
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone)]
