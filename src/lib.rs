@@ -69,9 +69,12 @@ impl ProgramState {
         let template = ConfigTemplateBuilder::new().with_api(Api::OPENGL);
         let display = DisplayBuilder::new().with_window_builder(Some(window_builder.clone()));
         let (Some(window), config) = display.build(&event_loop, template, |configs| {
+            let configs = configs.collect::<Vec<_>>();
+            let first = configs.first().cloned();
             configs
                 .into_iter()
                 .find(|config| config.api() == Api::OPENGL)
+                .or(first)
                 .expect("No OpenGL config found")
         })?
         else {
