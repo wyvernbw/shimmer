@@ -115,8 +115,21 @@ impl ProgramState {
     }
 }
 
-pub struct Program<U, V, F = sl::Vec4>
-where
+pub struct WithVertices;
+pub struct WithUniforms;
+pub struct WithDrawSettings;
+pub struct WithoutVertices;
+pub struct WithoutUniforms;
+pub struct WithoutDrawSettings;
+
+pub struct Program<
+    U,
+    V,
+    F = sl::Vec4,
+    HasVertices = WithoutVertices,
+    HasUniforms = WithoutUniforms,
+    HasSettings = WithoutDrawSettings,
+> where
     U: UniformInterface<Sl>,
     V: VsInterface<Sl>,
     F: ColorSample,
@@ -125,6 +138,7 @@ where
     run_mode: RunMode,
     inner: gl::Program<U, V, F>,
     workflow: Workflow<U, V, F>,
+    _marker: PhantomData<(HasVertices, HasUniforms, HasSettings)>,
 }
 
 pub trait VertexFn<V: VsInterface<Sl>> = Fn(&gl::Context) -> VertexSpec<V>;
@@ -169,6 +183,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
             state,
             run_mode,
             inner,
+            _marker: PhantomData,
             workflow: Workflow {
                 vertex_spec: None,
                 uniforms: None,
@@ -178,56 +193,96 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
         })
     }
 
-    pub fn with_vertices(self, vertices: impl VertexFn<V> + 'static) -> Self {
-        Self {
+    pub fn with_vertices(
+        self,
+        vertices: impl VertexFn<V> + 'static,
+    ) -> Program<U, V, F, WithVertices, WithoutUniforms, WithoutDrawSettings> {
+        Program {
             workflow: Workflow {
                 vertex_spec: Some(Box::new(vertices)),
                 ..self.workflow
             },
-            ..self
+            state: self.state,
+            run_mode: self.run_mode,
+            inner: self.inner,
+            _marker: PhantomData,
         }
     }
 
-    pub fn with_uniforms(self, uniforms: impl UniformsFn<U> + 'static) -> Self {
-        Self {
-            workflow: Workflow {
-                uniforms: Some(Box::new(uniforms)),
-                ..self.workflow
-            },
-            ..self
-        }
-    }
-
-    pub fn with_draw_settings(self, settings: impl SettingsFn + 'static) -> Self {
-        Self {
+    pub fn with_draw_settings(
+        self,
+        settings: impl SettingsFn + 'static,
+    ) -> Program<U, V, F, WithoutVertices, WithUniforms, WithoutDrawSettings> {
+        Program {
             workflow: Workflow {
                 settings: Some(Box::new(settings)),
                 ..self.workflow
             },
-            ..self
+            state: self.state,
+            run_mode: self.run_mode,
+            inner: self.inner,
+            _marker: PhantomData,
         }
     }
 }
 
-impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U, V, sl::Vec4> {
+impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSample, US, DS>
+    Program<U, V, F, WithVertices, US, DS>
+{
+    pub fn with_uniforms(
+        self,
+        uniforms: impl UniformsFn<U> + 'static,
+    ) -> Program<U, V, F, WithVertices, WithUniforms, DS> {
+        Program {
+            workflow: Workflow {
+                uniforms: Some(Box::new(uniforms)),
+                ..self.workflow
+            },
+            state: self.state,
+            run_mode: self.run_mode,
+            inner: self.inner,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSample, DS>
+    Program<U, V, F, WithVertices, WithUniforms, DS>
+{
+    pub fn with_draw_settings(
+        self,
+        settings: impl SettingsFn + 'static,
+    ) -> Program<U, V, F, WithVertices, WithUniforms, WithDrawSettings> {
+        Program {
+            workflow: Workflow {
+                settings: Some(Box::new(settings)),
+                ..self.workflow
+            },
+            state: self.state,
+            run_mode: self.run_mode,
+            inner: self.inner,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
+    Program<U, V, sl::Vec4, WithVertices, WithUniforms, WithDrawSettings>
+{
     pub fn draw(&self) -> Result<(), QuickError> {
         match (
             &self.workflow.vertex_spec,
             &self.workflow.uniforms,
             &self.workflow.settings,
         ) {
-            (None, _, _) => {}
-            (Some(_), None, _) => {}
-            (Some(vertex), Some(uniforms), None) => {
-                self.inner
-                    .with_uniforms(uniforms(&self.state.gl))
-                    .draw(vertex(&self.state.gl))?;
-            }
             (Some(vertex), Some(uniforms), Some(settings)) => {
                 self.inner
                     .with_settings(settings(&self.state.gl))
                     .with_uniforms(uniforms(&self.state.gl))
                     .draw(vertex(&self.state.gl))?;
+            }
+            _ => {
+                unreachable!("Vertex spec, uniforms and settings must be provided")
             }
         }
         Ok(())
@@ -293,27 +348,22 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static> Program<U,
     }
 }
 
-impl<V: VsInterface<Sl> + 'static> Program<(), V, sl::Vec4> {
-    pub fn draw_no_uniforms(&mut self) -> Result<(), QuickError> {
-        match &self.workflow {
-            Workflow {
-                vertex_spec: Some(vertex_spec),
-                uniforms: Some(uniforms),
-                ..
-            } => {
-                unreachable!();
+impl<V: VsInterface<Sl> + 'static>
+    Program<(), V, sl::Vec4, WithVertices, WithoutUniforms, WithDrawSettings>
+{
+    pub fn draw(&mut self) -> Result<(), QuickError> {
+        match (
+            &self.workflow.vertex_spec,
+            &self.workflow.uniforms,
+            &self.workflow.settings,
+        ) {
+            (Some(vertex), None, Some(settings)) => {
+                self.inner
+                    .with_settings(settings(&self.state.gl))
+                    .draw(vertex(&self.state.gl))?;
             }
-            Workflow {
-                vertex_spec: Some(vertex_spec),
-                uniforms: None,
-                ..
-            } => {
-                self.inner.draw(vertex_spec(&self.state.gl))?;
-            }
-            Workflow {
-                vertex_spec: None, ..
-            } => {
-                return Err("No vertex buffer provided!".into());
+            _ => {
+                unreachable!("Vertex spec and settings must be provided")
             }
         }
         Ok(())
@@ -325,12 +375,11 @@ fn log_frame_time(time: Duration) -> Result<(), Box<dyn Error + 'static>> {
     use std::io::stdout;
 
     use crossterm::{
-        cursor::{self, MoveDown, MoveUp},
+        cursor::MoveUp,
         execute,
         terminal::{Clear, ClearType},
     };
 
-    let position = cursor::position()?;
     let ms = time.as_millis();
     execute!(stdout(), Clear(ClearType::CurrentLine))?;
     tracing::info!(name: "frame_time", "Frame time: {:.2}ms\t FPS: {:.2}", ms, 1.0 / time.as_secs_f64());
