@@ -1,3 +1,5 @@
+#![feature(effects)]
+#![feature(const_trait_impl)]
 #![feature(type_changing_struct_update)]
 #![feature(associated_type_defaults)]
 #![feature(trait_alias)]
@@ -13,14 +15,18 @@ use gl::Context;
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
     context::{
-        ContextApi, ContextAttributesBuilder, GlContext, NotCurrentGlContext,
+        ContextApi, ContextAttributesBuilder, GlContext, GlProfile, NotCurrentGlContext,
         PossiblyCurrentContext, PossiblyCurrentGlContext, Version,
     },
     display::{GetGlDisplay, GlDisplay},
     surface::{GlSurface, Surface, WindowSurface},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
-use posh::{bytemuck::Pod, gl::BufferUsage, *};
+use posh::{
+    bytemuck::Pod,
+    gl::{BufferError, BufferUsage, UniformBuffer, UniformBufferBinding},
+    *,
+};
 use posh::{
     gl::VertexSpec,
     sl::{ColorSample, FsFunc, FsSig, VsFunc, VsSig},
@@ -29,11 +35,12 @@ use posh::{
     gl::{self, PrimitiveMode},
     sl,
 };
+use prelude::utils::App;
 use raw_window_handle::HasRawWindowHandle;
 use winit::{
     dpi::PhysicalSize,
     event::{Event, WindowEvent},
-    event_loop::EventLoop,
+    event_loop::{ControlFlow, EventLoop},
     platform::pump_events::EventLoopExtPumpEvents,
     window::{Window, WindowBuilder},
 };
@@ -70,15 +77,17 @@ impl ProgramState {
 
         let template = ConfigTemplateBuilder::new().with_api(Api::OPENGL);
         let display = DisplayBuilder::new().with_window_builder(Some(window_builder.clone()));
-        let (Some(window), config) = display.build(&event_loop, template, |configs| {
-            let configs = configs.collect::<Vec<_>>();
-            let first = configs.first().cloned();
-            configs
-                .into_iter()
-                .find(|config| config.api() == Api::OPENGL)
-                .or(first)
-                .expect("No OpenGL config found")
-        })?
+        let (Some(window), config) = display
+            .build(&event_loop, template, |configs| {
+                let configs = configs.collect::<Vec<_>>();
+                let first = configs.first().cloned();
+                configs
+                    .into_iter()
+                    .find(|config| config.api() == Api::OPENGL)
+                    .or(first)
+                    .expect("No OpenGL config found")
+            })
+            .map_err(|_| ErrorKind::DisplayError)?
         else {
             // DONE: return better error
             return Err(ErrorKind::WindowError);
@@ -86,6 +95,7 @@ impl ProgramState {
         tracing::info!("Window {:?} created with config {:?}", window, config);
         let raw_window_handle = window.raw_window_handle();
         let context_attributes = ContextAttributesBuilder::new()
+            .with_profile(GlProfile::Core)
             .with_context_api(ContextApi::OpenGl(Some(Version::new(4, 1))))
             .build(Some(raw_window_handle));
         let display = config.display();
@@ -306,54 +316,54 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
             RunMode::Windowed(ref window_config) => {
                 self.draw()?;
                 log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                let timeout = if let Some(WindowConfig {
+                    draw_mode: DrawMode::Loop { framerate },
+                    ..
+                }) = window_config
+                {
+                    Some(Duration::from_secs(1) / *framerate as u32)
+                } else {
+                    None
+                };
                 loop {
-                    let (tx, rx) = std::sync::mpsc::channel::<()>();
-                    log_error(tx.send(()));
-                    let timeout = if let Some(WindowConfig {
+                    if let Some(WindowConfig {
                         draw_mode: DrawMode::Loop { framerate },
                         ..
                     }) = window_config
                     {
-                        Some(Duration::from_secs(1) / *framerate as u32)
-                    } else {
-                        None
-                    };
-                    self.state
-                        .event_loop
-                        .pump_events(timeout, move |event, target| match event {
-                            Event::WindowEvent { event, .. } => match event {
-                                WindowEvent::RedrawRequested => {
-                                    log_error(tx.send(()));
-                                }
-                                WindowEvent::CloseRequested => {
-                                    exit(0);
-                                }
-                                _ => {}
-                            },
-                            Event::Suspended => {}
-                            _ => {}
-                        });
-                    if let Some(WindowConfig {
-                        draw_mode: DrawMode::Loop { framerate },
-                        title,
-                        size,
-                    }) = window_config
-                    {
                         let time = Instant::now();
                         let frame_time = Duration::from_secs_f32(1.0 / *framerate as f32);
-                        if let Ok(()) = rx.recv() {
-                            self.draw()?;
-                            log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
-                        }
+                        self.draw()?;
+                        self.state.window.request_redraw();
+                        log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
                         let delta = time.elapsed();
                         if delta < frame_time {
                             std::thread::sleep(frame_time - delta);
                         }
                         #[cfg(feature = "tracing")]
-                        log_frame_time(time.elapsed())?;
-                        self.state.window.request_redraw();
-                        self.state.window.set_title(title);
+                        let _ = log_frame_time(time.elapsed());
                     }
+                    self.state.event_loop.pump_events(
+                        Some(Duration::ZERO),
+                        move |event, target| {
+                            target.set_control_flow(ControlFlow::Poll);
+                            tracing::info!(?event);
+                            match event {
+                                Event::WindowEvent { event, .. } => match event {
+                                    WindowEvent::RedrawRequested => {}
+                                    WindowEvent::CloseRequested => {
+                                        exit(0);
+                                    }
+                                    WindowEvent::Resized(_) => {
+                                        target.set_control_flow(ControlFlow::Poll);
+                                    }
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        },
+                    );
                 }
             }
         }
@@ -399,11 +409,21 @@ fn log_frame_time(time: Duration) -> Result<(), Box<dyn Error + 'static>> {
     Ok(())
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct WindowConfig {
     pub title: String,
     pub size: PhysicalSize<u32>,
     pub draw_mode: DrawMode,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            title: "Shimmer".into(),
+            size: PhysicalSize::new(800, 600),
+            draw_mode: DrawMode::Once,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -425,15 +445,29 @@ impl<'a> Handle<'a> {
     pub fn gl(&self) -> &gl::Context {
         &self.0.gl
     }
-    pub fn create_uniform_buffer<B: Block<Gl>>(
-        &self,
-        uniforms: B::Gl,
-        usage: BufferUsage,
-    ) -> Result<gl::UniformBufferBinding<B::Sl>, ErrorKind> {
+    pub fn app(&self) -> App<Gl> {
+        let size = self.0.window.inner_size();
+        App {
+            size: gl::UVec2 {
+                x: size.width,
+                y: size.height,
+            },
+        }
+    }
+    pub fn app_buffer(&self) -> Result<UniformBufferBinding<App<Sl>>, BufferError> {
         Ok(self
-            .0
-            .gl
-            .create_uniform_buffer::<B>(uniforms, usage)?
+            .gl()
+            .create_uniform_buffer::<App<Gl>>(self.app(), BufferUsage::DynamicDraw)?
+            .as_binding())
+    }
+    pub fn create_uniform_binding<B: Block<Gl>>(
+        &self,
+        data: B::Gl,
+        usage: BufferUsage,
+    ) -> Result<UniformBufferBinding<B::Sl>, BufferError> {
+        Ok(self
+            .gl()
+            .create_uniform_buffer::<B>(data, usage)?
             .as_binding())
     }
     pub fn create_vertex_spec<V: Block<Gl> + Pod>(

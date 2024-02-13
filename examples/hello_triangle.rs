@@ -31,7 +31,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .with_uniforms(move |handle: Handle| {
             handle
-                .create_uniform_buffer::<Uniforms<Gl>>(
+                .create_uniform_binding::<Uniforms<Gl>>(
                     Uniforms {
                         time: Instant::now().duration_since(start).as_secs_f32(),
                         size: 1.0,

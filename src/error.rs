@@ -5,12 +5,12 @@ use winit::error::EventLoopError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorKind {
+    #[error("Display could not be created")]
+    DisplayError,
     #[error("No OpenGL Config found for the current platform.")]
     NoConfigFound,
     #[error("EventLoopError: {0}")]
     EventLoopError(#[from] EventLoopError),
-    #[error("Unknown error: {0}")]
-    Unknown(#[from] Box<dyn std::error::Error>),
     #[error("Error creating window")]
     WindowError,
     #[error("OpenGl Error")]
