@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use error::{log_error, ErrorKind};
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
     context::{
@@ -21,7 +22,6 @@ use glutin_winit::{DisplayBuilder, GlWindow};
 use posh::{
     gl::VertexSpec,
     sl::{ColorSample, FsFunc, FsSig, VsFunc, VsSig},
-    Sl, UniformInterface, UniformUnion, VsInterface,
 };
 use raw_window_handle::HasRawWindowHandle;
 use winit::{
@@ -29,16 +29,14 @@ use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
     platform::pump_events::EventLoopExtPumpEvents,
-    raw_window_handle::HasDisplayHandle,
     window::{Window, WindowBuilder},
 };
 
 pub use gl::Context;
-pub use posh::gl;
-pub use posh::sl;
+pub use posh::*;
+pub use posh::{gl, sl};
 
-// TODO: Delete this
-type QuickError = Box<dyn Error + 'static>;
+pub mod error;
 
 struct ProgramState {
     config: Config,
@@ -52,7 +50,7 @@ struct ProgramState {
 
 impl ProgramState {
     // FIXME: Improve error type
-    fn new(run_mode: RunMode) -> Result<Self, Box<dyn Error + 'static>> {
+    fn new(run_mode: RunMode) -> Result<Self, ErrorKind> {
         let event_loop = EventLoop::new()?;
         let window_builder = WindowBuilder::new()
             .with_title("Posh")
@@ -78,8 +76,8 @@ impl ProgramState {
                 .expect("No OpenGL config found")
         })?
         else {
-            // FIXME: return better error
-            return Err("No OpenGL config found".into());
+            // DONE: return better error
+            return Err(ErrorKind::WindowError);
         };
         tracing::info!("Window {:?} created with config {:?}", window, config);
         let raw_window_handle = window.raw_window_handle();
@@ -89,17 +87,23 @@ impl ProgramState {
         let display = config.display();
         let version = display.version_string();
         tracing::info!("OpenGL version: {:?}", version);
-        let ctx = unsafe { display.create_context(&config, &context_attributes)? };
+        let ctx = unsafe {
+            display
+                .create_context(&config, &context_attributes)
+                .map_err(|_| ErrorKind::OpenGlError("Context creation failed".into()))?
+        };
         tracing::info!("OpenGL context created: {:?}", ctx.context_api());
         let surface_attributes = window.build_surface_attributes(Default::default());
         let gl_surface = unsafe {
             config
                 .display()
-                .create_window_surface(&config, &surface_attributes)?
+                .create_window_surface(&config, &surface_attributes)
+                .map_err(|_| ErrorKind::OpenGlError("Failed to create gl surface".into()))?
         };
-        let ctx = ctx.make_current(&gl_surface)?;
+        let ctx = ctx
+            .make_current(&gl_surface)
+            .map_err(|_| ErrorKind::OpenGlError("Failed to make context current".into()))?;
         tracing::info!("Context made current: {:?}", ctx.is_current());
-        ctx.make_current(&gl_surface)?;
         let features = display.supported_features();
         tracing::info!("Display features {:?}", features);
         let gl = unsafe {
@@ -171,7 +175,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
         vertex_shader: VFn,
         fragment_shader: FFn,
         run_mode: RunMode,
-    ) -> Result<Self, QuickError>
+    ) -> Result<Self, ErrorKind>
     where
         VSig: VsSig<C = (), V = V>,
         FSig: FsSig<C = (), W = VSig::W, F = F>,
@@ -272,7 +276,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
 impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
     Program<U, V, sl::Vec4, WithVertices, WithUniforms, WithDrawSettings>
 {
-    pub fn draw(&self) -> Result<(), QuickError> {
+    pub fn draw(&self) -> Result<(), ErrorKind> {
         match (
             &self.workflow.vertex_spec,
             &self.workflow.uniforms,
@@ -291,15 +295,15 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
         Ok(())
     }
 
-    pub fn serve(mut self) -> Result<(), QuickError> {
+    pub fn serve(mut self) -> Result<(), ErrorKind> {
         match self.run_mode {
             RunMode::Headless => todo!(),
             RunMode::Windowed(ref window_config) => {
                 self.draw()?;
-                self.state.gl_surface.swap_buffers(&self.state.ctx)?;
+                log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
                 loop {
                     let (tx, rx) = std::sync::mpsc::channel::<()>();
-                    tx.send(())?;
+                    log_error(tx.send(()));
                     let timeout = if let Some(WindowConfig {
                         draw_mode: DrawMode::Loop { framerate },
                         ..
@@ -314,7 +318,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
                         .pump_events(timeout, move |event, target| match event {
                             Event::WindowEvent { event, .. } => match event {
                                 WindowEvent::RedrawRequested => {
-                                    tx.send(()).unwrap();
+                                    log_error(tx.send(()));
                                 }
                                 WindowEvent::CloseRequested => {
                                     exit(0);
@@ -334,7 +338,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
                         let frame_time = Duration::from_secs_f32(1.0 / *framerate as f32);
                         if let Ok(()) = rx.recv() {
                             self.draw()?;
-                            self.state.gl_surface.swap_buffers(&self.state.ctx)?;
+                            log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
                         }
                         let delta = time.elapsed();
                         if delta < frame_time {
@@ -354,7 +358,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
 impl<V: VsInterface<Sl> + 'static>
     Program<(), V, sl::Vec4, WithVertices, WithoutUniforms, WithDrawSettings>
 {
-    pub fn draw(&mut self) -> Result<(), QuickError> {
+    pub fn draw(&mut self) -> Result<(), ErrorKind> {
         match (
             &self.workflow.vertex_spec,
             &self.workflow.uniforms,

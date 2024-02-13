@@ -1,9 +1,7 @@
 use std::time::Instant;
 
-use posh::{
-    gl::{self, BufferUsage, DrawSettings, PrimitiveMode, UniformBuffer},
-    sl, Block, BlockDom, Gl, Sl,
-};
+use posh::gl::{self, BufferUsage, DrawSettings, PrimitiveMode, UniformBuffer};
+use posh::{sl, Block, BlockDom, Gl, Sl};
 use shimmer::{Program, RunMode, WindowConfig};
 use winit::dpi::PhysicalSize;
 
@@ -28,7 +26,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [-0.5, -0.5].into(),
                         [0.5, -0.5].into(),
                     ],
-                    gl::BufferUsage::StreamDraw,
+                    gl::BufferUsage::DynamicDraw,
                 )
                 .unwrap();
             vertices.as_vertex_spec(PrimitiveMode::Triangles)
@@ -39,11 +37,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 size: 1.0,
             };
             let uniforms: UniformBuffer<Uniforms<Gl>> = gl
-                .create_uniform_buffer(uniforms, BufferUsage::StaticRead)
+                .create_uniform_buffer(uniforms, BufferUsage::StreamDraw)
                 .unwrap();
             uniforms.as_binding()
         })
-        .with_draw_settings(|gl: &gl::Context| DrawSettings {
+        .with_draw_settings(|_| DrawSettings {
             clear_color: Some([1.0, 1.0, 1.0, 1.0]),
             ..Default::default()
         });
