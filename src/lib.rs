@@ -9,6 +9,7 @@ use std::{
 };
 
 use error::{log_error, ErrorKind};
+use gl::Context;
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
     context::{
@@ -19,9 +20,14 @@ use glutin::{
     surface::{GlSurface, Surface, WindowSurface},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
+use posh::{bytemuck::Pod, gl::BufferUsage, *};
 use posh::{
     gl::VertexSpec,
     sl::{ColorSample, FsFunc, FsSig, VsFunc, VsSig},
+};
+use posh::{
+    gl::{self, PrimitiveMode},
+    sl,
 };
 use raw_window_handle::HasRawWindowHandle;
 use winit::{
@@ -32,11 +38,9 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
-pub use gl::Context;
-pub use posh::*;
-pub use posh::{gl, sl};
-
 pub mod error;
+pub mod prelude;
+pub mod utils;
 
 struct ProgramState {
     config: Config,
@@ -148,9 +152,10 @@ pub struct Program<
     _marker: PhantomData<(HasVertices, HasUniforms, HasSettings)>,
 }
 
-pub trait VertexFn<V: VsInterface<Sl>> = Fn(&gl::Context) -> VertexSpec<V>;
-pub trait UniformsFn<U: UniformInterface<Sl>> = Fn(&gl::Context) -> <U as UniformInterface<Sl>>::Gl;
-pub trait SettingsFn = Fn(&gl::Context) -> gl::DrawSettings;
+pub struct Handle<'a>(&'a ProgramState);
+pub trait VertexFn<V: VsInterface<Sl>> = Fn(Handle) -> VertexSpec<V>;
+pub trait UniformsFn<U: UniformInterface<Sl>> = Fn(Handle) -> <U as UniformInterface<Sl>>::Gl;
+pub trait SettingsFn = Fn(Handle) -> gl::DrawSettings;
 
 type VertexCallback<V> = Box<dyn VertexFn<V>>;
 type UniformsCallback<U> = Box<dyn UniformsFn<U>>;
@@ -284,9 +289,9 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
         ) {
             (Some(vertex), Some(uniforms), Some(settings)) => {
                 self.inner
-                    .with_settings(settings(&self.state.gl))
-                    .with_uniforms(uniforms(&self.state.gl))
-                    .draw(vertex(&self.state.gl))?;
+                    .with_settings(settings(Handle(&self.state)))
+                    .with_uniforms(uniforms(Handle(&self.state)))
+                    .draw(vertex(Handle(&self.state)))?;
             }
             _ => {
                 unreachable!("Vertex spec, uniforms and settings must be provided")
@@ -366,8 +371,8 @@ impl<V: VsInterface<Sl> + 'static>
         ) {
             (Some(vertex), None, Some(settings)) => {
                 self.inner
-                    .with_settings(settings(&self.state.gl))
-                    .draw(vertex(&self.state.gl))?;
+                    .with_settings(settings(Handle(&self.state)))
+                    .draw(vertex(Handle(&self.state)))?;
             }
             _ => {
                 unreachable!("Vertex spec and settings must be provided")
@@ -416,13 +421,31 @@ pub enum RunMode {
     Windowed(Option<WindowConfig>),
 }
 
-pub fn full_screen_quad() -> Vec<gl::Vec2> {
-    vec![
-        [-1.0, 1.0].into(),
-        [-1.0, -1.0].into(),
-        [1.0, -1.0].into(),
-        [1.0, -1.0].into(),
-        [1.0, 1.0].into(),
-        [-1.0, 1.0].into(),
-    ]
+impl<'a> Handle<'a> {
+    pub fn gl(&self) -> &gl::Context {
+        &self.0.gl
+    }
+    pub fn create_uniform_buffer<B: Block<Gl>>(
+        &self,
+        uniforms: B::Gl,
+        usage: BufferUsage,
+    ) -> Result<gl::UniformBufferBinding<B::Sl>, ErrorKind> {
+        Ok(self
+            .0
+            .gl
+            .create_uniform_buffer::<B>(uniforms, usage)?
+            .as_binding())
+    }
+    pub fn create_vertex_spec<V: Block<Gl> + Pod>(
+        &self,
+        vertices: &[V],
+        usage: BufferUsage,
+        primitive_mode: PrimitiveMode,
+    ) -> Result<gl::VertexSpec<<V as Block<Gl>>::Sl>, ErrorKind> {
+        Ok(self
+            .0
+            .gl
+            .create_vertex_buffer(vertices, usage)?
+            .as_vertex_spec(primitive_mode))
+    }
 }

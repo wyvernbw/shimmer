@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use posh::gl::{self, BufferUsage, DrawSettings, PrimitiveMode, UniformBuffer};
-use posh::{sl, Block, BlockDom, Gl, Sl};
-use shimmer::{Program, RunMode, WindowConfig};
+use shimmer::prelude::*;
 use winit::dpi::PhysicalSize;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,28 +16,29 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let start = Instant::now();
     let program = program
-        .with_vertices(move |gl| {
-            let vertices: gl::VertexBuffer<gl::Vec2> = gl
-                .create_vertex_buffer(
+        .with_vertices(move |handle| {
+            handle
+                .create_vertex_spec::<gl::Vec2>(
                     &[
                         [0.0f32, 1.0].into(),
                         [-0.5, -0.5].into(),
                         [0.5, -0.5].into(),
                     ],
                     gl::BufferUsage::DynamicDraw,
+                    PrimitiveMode::Triangles,
                 )
-                .unwrap();
-            vertices.as_vertex_spec(PrimitiveMode::Triangles)
+                .unwrap()
         })
-        .with_uniforms(move |gl: &gl::Context| {
-            let uniforms = Uniforms {
-                time: Instant::now().duration_since(start).as_secs_f32(),
-                size: 1.0,
-            };
-            let uniforms: UniformBuffer<Uniforms<Gl>> = gl
-                .create_uniform_buffer(uniforms, BufferUsage::StreamDraw)
-                .unwrap();
-            uniforms.as_binding()
+        .with_uniforms(move |handle: Handle| {
+            handle
+                .create_uniform_buffer::<Uniforms<Gl>>(
+                    Uniforms {
+                        time: Instant::now().duration_since(start).as_secs_f32(),
+                        size: 1.0,
+                    },
+                    BufferUsage::StreamDraw,
+                )
+                .unwrap()
         })
         .with_draw_settings(|_| DrawSettings {
             clear_color: Some([1.0, 1.0, 1.0, 1.0]),

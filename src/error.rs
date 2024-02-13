@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use posh::gl::{ContextError, DrawError, ProgramError};
+use posh::gl::{BufferError, ContextError, DrawError, ProgramError};
 use winit::error::EventLoopError;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +21,8 @@ pub enum ErrorKind {
     PoshProgramError(#[from] ProgramError),
     #[error("PoshDrawError: {0}")]
     PoshDrawError(#[from] DrawError),
+    #[error("PoshBufferError: {0}")]
+    PoshBufferError(#[from] BufferError),
 }
 
 pub(crate) fn log_error<T>(res: Result<T, impl Error>) {
