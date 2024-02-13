@@ -312,60 +312,53 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
 
     pub fn serve(mut self) -> Result<(), ErrorKind> {
         match self.run_mode {
-            RunMode::Headless => todo!(),
+            RunMode::Headless => todo!("TODO: Implement headless mode"),
             RunMode::Windowed(ref window_config) => {
-                self.draw()?;
-                log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
-                let (tx, rx) = std::sync::mpsc::channel::<()>();
-                let timeout = if let Some(WindowConfig {
-                    draw_mode: DrawMode::Loop { framerate },
-                    ..
-                }) = window_config
-                {
-                    Some(Duration::from_secs(1) / *framerate as u32)
-                } else {
-                    None
-                };
-                loop {
-                    if let Some(WindowConfig {
-                        draw_mode: DrawMode::Loop { framerate },
-                        ..
-                    }) = window_config
-                    {
-                        let time = Instant::now();
-                        let frame_time = Duration::from_secs_f32(1.0 / *framerate as f32);
-                        self.draw()?;
-                        self.state.window.request_redraw();
-                        log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
-                        let delta = time.elapsed();
-                        if delta < frame_time {
-                            std::thread::sleep(frame_time - delta);
-                        }
-                        #[cfg(feature = "tracing")]
-                        let _ = log_frame_time(time.elapsed());
-                    }
-                    self.state.event_loop.pump_events(
-                        Some(Duration::ZERO),
-                        move |event, target| {
-                            target.set_control_flow(ControlFlow::Poll);
-                            tracing::info!(?event);
-                            match event {
-                                Event::WindowEvent { event, .. } => match event {
-                                    WindowEvent::RedrawRequested => {}
-                                    WindowEvent::CloseRequested => {
-                                        exit(0);
-                                    }
-                                    WindowEvent::Resized(_) => {
-                                        target.set_control_flow(ControlFlow::Poll);
-                                    }
-                                    _ => {}
-                                },
-                                _ => {}
-                            }
-                        },
-                    );
-                }
+                let window_config = window_config.clone();
+                self.window_loop(window_config)
             }
+        }
+    }
+
+    fn window_loop(mut self, window_config: Option<WindowConfig>) -> Result<(), ErrorKind> {
+        self.draw()?;
+        log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
+        loop {
+            if let Some(WindowConfig {
+                draw_mode: DrawMode::Loop { framerate },
+                ..
+            }) = window_config
+            {
+                let time = Instant::now();
+                let frame_time = Duration::from_secs_f32(1.0 / framerate as f32);
+                self.draw()?;
+                self.state.window.request_redraw();
+                log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
+                let delta = time.elapsed();
+                if delta < frame_time {
+                    std::thread::sleep(frame_time - delta);
+                }
+                #[cfg(feature = "tracing")]
+                let _ = log_frame_time(time.elapsed());
+            }
+            self.state
+                .event_loop
+                .pump_events(Some(Duration::ZERO), move |event, target| {
+                    target.set_control_flow(ControlFlow::Poll);
+                    match event {
+                        Event::WindowEvent { event, .. } => match event {
+                            WindowEvent::RedrawRequested => {}
+                            WindowEvent::CloseRequested => {
+                                exit(0);
+                            }
+                            WindowEvent::Resized(_) => {
+                                target.set_control_flow(ControlFlow::Poll);
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                });
         }
     }
 }

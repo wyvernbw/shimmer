@@ -66,13 +66,17 @@ fn vertex_shader(_: Uniforms<Sl>, vertex: sl::Vec2) -> sl::VsOutput<sl::Vec2> {
 }
 
 fn fragment_shader(Uniforms { texture, app }: Uniforms<Sl>, clip_space_pos: sl::Vec2) -> sl::Vec4 {
+    // Calculate and flip the UV coordinate from the clip space position
     let uv = flip_v(uv(clip_space_pos));
+    // Preserve the aspect ratio of the texture
     let uv = preserve_aspect_ratio(
         aspect_ratio(app.size.as_vec2()),
         texture_aspect_ratio(texture),
         uv,
     );
+    // Sample the texture and lerp the color based on the UV coordinate
     let color = texture.sample(uv);
+    // Create black bars when uv is not in the range `[0, 1]`
     let step = uv.step(1.0) + (uv * -1.0).step(0.0);
 
     color.lerp(sl::Vec4::new(0.0, 0.0, 0.0, 1.0), step.x + step.y)
