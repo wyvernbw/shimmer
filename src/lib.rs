@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use error::{log_error, ErrorKind};
+use error::{log_error, ErrKind};
 use gl::Context;
 use glutin::{
     config::{Api, Config, ConfigTemplateBuilder, GlConfig},
@@ -19,13 +19,13 @@ use glutin::{
         PossiblyCurrentContext, PossiblyCurrentGlContext, Version,
     },
     display::{GetGlDisplay, GlDisplay},
-    surface::{GlSurface, Surface, WindowSurface},
+    surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface},
 };
 use glutin_winit::{DisplayBuilder, GlWindow};
 use posh::{
     bytemuck::Pod,
-    gl::{BufferError, BufferUsage, UniformBuffer, UniformBufferBinding},
-    *,
+    gl::{BufferError, BufferUsage, UniformBufferBinding},
+    glow, Block, Gl, Sl, UniformInterface, UniformUnion, VsInterface,
 };
 use posh::{
     gl::VertexSpec,
@@ -61,7 +61,7 @@ struct ProgramState {
 
 impl ProgramState {
     // FIXME: Improve error type
-    fn new(run_mode: RunMode) -> Result<Self, ErrorKind> {
+    fn new(run_mode: RunMode) -> Result<Self, ErrKind> {
         let event_loop = EventLoop::new()?;
         let window_builder = WindowBuilder::new()
             .with_title("Posh")
@@ -87,10 +87,10 @@ impl ProgramState {
                     .or(first)
                     .expect("No OpenGL config found")
             })
-            .map_err(|_| ErrorKind::DisplayError)?
+            .map_err(|_| ErrKind::DisplayError)?
         else {
             // DONE: return better error
-            return Err(ErrorKind::WindowError);
+            return Err(ErrKind::WindowError);
         };
         tracing::info!("Window {:?} created with config {:?}", window, config);
         let raw_window_handle = window.raw_window_handle();
@@ -104,19 +104,20 @@ impl ProgramState {
         let ctx = unsafe {
             display
                 .create_context(&config, &context_attributes)
-                .map_err(|_| ErrorKind::OpenGlError("Context creation failed".into()))?
+                .map_err(|_| ErrKind::OpenGlError("Context creation failed".into()))?
         };
         tracing::info!("OpenGL context created: {:?}", ctx.context_api());
-        let surface_attributes = window.build_surface_attributes(Default::default());
+        let surface_attributes =
+            window.build_surface_attributes(SurfaceAttributesBuilder::default());
         let gl_surface = unsafe {
             config
                 .display()
                 .create_window_surface(&config, &surface_attributes)
-                .map_err(|_| ErrorKind::OpenGlError("Failed to create gl surface".into()))?
+                .map_err(|_| ErrKind::OpenGlError("Failed to create gl surface".into()))?
         };
         let ctx = ctx
             .make_current(&gl_surface)
-            .map_err(|_| ErrorKind::OpenGlError("Failed to make context current".into()))?;
+            .map_err(|_| ErrKind::OpenGlError("Failed to make context current".into()))?;
         tracing::info!("Context made current: {:?}", ctx.is_current());
         let features = display.supported_features();
         tracing::info!("Display features {:?}", features);
@@ -186,11 +187,25 @@ where
 impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSample>
     Program<U, V, F>
 {
+    /// Create a new program with the given vertex and fragment shaders.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shimmer::Program;
+    ///
+    /// let result = Program::new(vertex_shader, fragment_shader, run_mode);
+    /// assert_eq!(result, );
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// This function can error if the program state fails to initialize, either due to missing `OpenGl` support or a window creation error.
     pub fn new<FFn, VFn, FSig, VSig>(
         vertex_shader: VFn,
         fragment_shader: FFn,
         run_mode: RunMode,
-    ) -> Result<Self, ErrorKind>
+    ) -> Result<Self, ErrKind>
     where
         VSig: VsSig<C = (), V = V>,
         FSig: FsSig<C = (), W = VSig::W, F = F>,
@@ -201,7 +216,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
         let state = ProgramState::new(run_mode.clone())?;
         let inner: gl::Program<U, V, F> =
             state.gl.create_program(vertex_shader, fragment_shader)?;
-        Ok(Program {
+        Ok(Self {
             state,
             run_mode,
             inner,
@@ -291,7 +306,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static, F: ColorSa
 impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
     Program<U, V, sl::Vec4, WithVertices, WithUniforms, WithDrawSettings>
 {
-    pub fn draw(&self) -> Result<(), ErrorKind> {
+    fn draw(&self) -> Result<(), ErrKind> {
         match (
             &self.workflow.vertex_spec,
             &self.workflow.uniforms,
@@ -310,17 +325,22 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
         Ok(())
     }
 
-    pub fn serve(mut self) -> Result<(), ErrorKind> {
+    /// Start the program, drawing to a window or running headless.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if drawing fails.
+    pub fn serve(self) -> Result<(), ErrKind> {
         match self.run_mode {
             RunMode::Headless => todo!("TODO: Implement headless mode"),
             RunMode::Windowed(ref window_config) => {
                 let window_config = window_config.clone();
-                self.window_loop(window_config)
+                self.window_loop(&window_config)
             }
         }
     }
 
-    fn window_loop(mut self, window_config: Option<WindowConfig>) -> Result<(), ErrorKind> {
+    fn window_loop(mut self, window_config: &Option<WindowConfig>) -> Result<(), ErrKind> {
         self.draw()?;
         log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
         loop {
@@ -330,7 +350,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
             }) = window_config
             {
                 let time = Instant::now();
-                let frame_time = Duration::from_secs_f32(1.0 / framerate as f32);
+                let frame_time = Duration::from_secs_f32(1.0 / *framerate);
                 self.draw()?;
                 self.state.window.request_redraw();
                 log_error(self.state.gl_surface.swap_buffers(&self.state.ctx));
@@ -345,9 +365,8 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
                 .event_loop
                 .pump_events(Some(Duration::ZERO), move |event, target| {
                     target.set_control_flow(ControlFlow::Poll);
-                    match event {
-                        Event::WindowEvent { event, .. } => match event {
-                            WindowEvent::RedrawRequested => {}
+                    if let Event::WindowEvent { event, .. } = event {
+                        match event {
                             WindowEvent::CloseRequested => {
                                 exit(0);
                             }
@@ -355,8 +374,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
                                 target.set_control_flow(ControlFlow::Poll);
                             }
                             _ => {}
-                        },
-                        _ => {}
+                        }
                     }
                 });
         }
@@ -366,7 +384,7 @@ impl<U: UniformInterface<Sl> + 'static, V: VsInterface<Sl> + 'static>
 impl<V: VsInterface<Sl> + 'static>
     Program<(), V, sl::Vec4, WithVertices, WithoutUniforms, WithDrawSettings>
 {
-    pub fn draw(&mut self) -> Result<(), ErrorKind> {
+    fn draw(&mut self) -> Result<(), ErrKind> {
         match (
             &self.workflow.vertex_spec,
             &self.workflow.uniforms,
@@ -424,7 +442,7 @@ pub enum DrawMode {
     #[default]
     Once,
     Loop {
-        framerate: u64,
+        framerate: f32,
     },
 }
 
@@ -435,9 +453,11 @@ pub enum RunMode {
 }
 
 impl<'a> Handle<'a> {
-    pub fn gl(&self) -> &gl::Context {
+    #[must_use]
+    pub const fn gl(&self) -> &gl::Context {
         &self.0.gl
     }
+    #[must_use]
     pub fn app(&self) -> App<Gl> {
         let size = self.0.window.inner_size();
         App {
@@ -447,12 +467,42 @@ impl<'a> Handle<'a> {
             },
         }
     }
+    /// Create a uniform buffer binding for the app data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shimmer::Handle;
+    ///
+    /// let handle = ;
+    /// assert_eq!(handle.app_buffer(), );
+    ///
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the buffer creation fails.
     pub fn app_buffer(&self) -> Result<UniformBufferBinding<App<Sl>>, BufferError> {
         Ok(self
             .gl()
             .create_uniform_buffer::<App<Gl>>(self.app(), BufferUsage::DynamicDraw)?
             .as_binding())
     }
+    /// Create a uniform buffer from the given data and usage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shimmer::Handle;
+    ///
+    /// let handle = ;
+    /// let result = handle.create_uniform_binding(data, usage);
+    /// assert_eq!(result, );
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the buffer creation fails.
     pub fn create_uniform_binding<B: Block<Gl>>(
         &self,
         data: B::Gl,
@@ -463,12 +513,27 @@ impl<'a> Handle<'a> {
             .create_uniform_buffer::<B>(data, usage)?
             .as_binding())
     }
+    ///  Create a vertex spec from the given vertices, usage and primitive mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shimmer::Handle;
+    ///
+    /// let handle = ;
+    /// let result = handle.create_vertex_spec(vertices, usage, primitive_mode);
+    /// assert_eq!(result, );
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the buffer creation fails.
     pub fn create_vertex_spec<V: Block<Gl> + Pod>(
         &self,
         vertices: &[V],
         usage: BufferUsage,
         primitive_mode: PrimitiveMode,
-    ) -> Result<gl::VertexSpec<<V as Block<Gl>>::Sl>, ErrorKind> {
+    ) -> Result<gl::VertexSpec<<V as Block<Gl>>::Sl>, ErrKind> {
         Ok(self
             .0
             .gl

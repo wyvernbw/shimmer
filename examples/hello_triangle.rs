@@ -3,6 +3,7 @@ use std::time::Instant;
 use shimmer::prelude::*;
 use winit::dpi::PhysicalSize;
 
+#[allow(clippy::unwrap_used)]
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     let program: Program<Uniforms<Sl>, sl::Vec2> = Program::new(
@@ -11,7 +12,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         RunMode::Windowed(Some(WindowConfig {
             title: "My window".into(),
             size: PhysicalSize::new(800, 600),
-            draw_mode: shimmer::DrawMode::Loop { framerate: 144 },
+            draw_mode: shimmer::DrawMode::Loop { framerate: 144.0 },
         })),
     )?;
     let start = Instant::now();

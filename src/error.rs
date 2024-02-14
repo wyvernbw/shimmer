@@ -4,7 +4,7 @@ use posh::gl::{BufferError, ContextError, DrawError, ProgramError};
 use winit::error::EventLoopError;
 
 #[derive(Debug, thiserror::Error)]
-pub enum ErrorKind {
+pub enum ErrKind {
     #[error("Display could not be created")]
     DisplayError,
     #[error("No OpenGL Config found for the current platform.")]

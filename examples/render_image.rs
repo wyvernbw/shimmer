@@ -10,6 +10,7 @@ struct Uniforms<D: UniformInterfaceDom> {
     app: D::Block<App<Sl>>,
 }
 
+#[allow(clippy::unwrap_used)]
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let image = image::open("examples/assets/Dog.png")?;
@@ -18,7 +19,7 @@ fn main() -> anyhow::Result<()> {
         fragment_shader,
         RunMode::Windowed(Some(WindowConfig {
             title: "My window".into(),
-            draw_mode: shimmer::DrawMode::Loop { framerate: 144 },
+            draw_mode: shimmer::DrawMode::Loop { framerate: 144.0 },
             ..Default::default()
         })),
     )?;
@@ -44,9 +45,7 @@ fn main() -> anyhow::Result<()> {
                     .gl()
                     .create_color_texture_2d(image)
                     .unwrap()
-                    .as_color_sampler(Sampler2dSettings {
-                        ..Default::default()
-                    }),
+                    .as_color_sampler(Sampler2dSettings::default()),
                 app: handle.app_buffer().unwrap(),
             }
         })

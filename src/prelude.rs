@@ -1,4 +1,4 @@
-pub use crate::error::ErrorKind;
+pub use crate::error::ErrKind;
 pub use crate::Program;
 pub use crate::*;
 pub use gl::Context;

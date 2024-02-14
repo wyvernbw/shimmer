@@ -23,3 +23,9 @@ thiserror = "1.0.57"
 [dev-dependencies]
 anyhow = "*"
 tracing-subscriber = "0.3.18"
+
+[lints.clippy]
+pedantic = "deny"
+enum_glob_use = "deny"
+nursery = "deny"
+unwrap_used = "deny"
